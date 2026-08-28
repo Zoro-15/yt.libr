@@ -2,6 +2,7 @@
 Extraction pipeline coordinator.
 Manages raw extraction from Watch Later, Liked Videos, User Playlists, and custom Playlists,
 saving to data/raw/, logging errors, and executing the full normalization & merge pipeline.
+Supports skipping already extracted sources/playlists to avoid redundant network requests.
 """
 
 from pathlib import Path
@@ -18,6 +19,7 @@ from scraper.normalize import (
 )
 from scraper.output import (
     load_raw_extraction,
+    load_raw_playlist_file,
     load_raw_playlists_directory,
     load_raw_playlists_index,
     save_error_log,
@@ -50,13 +52,37 @@ def scrape_source(
     source_name: str,
     config: ScraperConfig,
     limit: Optional[int] = None,
+    skip_existing: bool = True,
     dry_run: bool = False,
 ) -> ExtractionResult:
     """
     Executes raw metadata extraction for a built-in source (watch_later or liked).
     Saves output to data/raw/<source>.json.
+    Skips extraction if already cached on disk and skip_existing is True.
     """
     display_title = "Watch Later" if source_name == "watch_later" else "Liked Videos"
+    raw_path = config.watch_later_raw_path if source_name == "watch_later" else config.liked_raw_path
+
+    # Check if already extracted
+    if skip_existing and raw_path.exists() and not dry_run:
+        cached_entries = load_raw_extraction(raw_path)
+        if cached_entries:
+            print(f"Source '{cyan(display_title)}': {green(f'Already cached on disk ({len(cached_entries):,} videos).')} Skipping re-scrape.")
+            return ExtractionResult(
+                source_name=source_name,
+                playlist_id="WL" if source_name == "watch_later" else "LL",
+                playlist_title=display_title,
+                playlist_description=None,
+                channel_name=None,
+                channel_id=None,
+                entries=cached_entries,
+                errors=[],
+                total_processed=len(cached_entries),
+                success_count=len(cached_entries),
+                unavailable_count=0,
+                failed_count=0,
+            )
+
     print(bold(f"\nExtracting Source: {cyan(display_title)}"))
     if limit:
         print(f"Limit: {cyan(str(limit))} videos")
@@ -83,7 +109,6 @@ def scrape_source(
     print()
 
     if not dry_run and result.entries:
-        raw_path = config.watch_later_raw_path if source_name == "watch_later" else config.liked_raw_path
         save_raw_extraction(
             output_path=raw_path,
             source_name=source_name,
@@ -112,14 +137,39 @@ def scrape_single_playlist(
     playlist_id_or_url: str,
     config: ScraperConfig,
     limit: Optional[int] = None,
+    skip_existing: bool = True,
     dry_run: bool = False,
 ) -> ExtractionResult:
     """
     Extracts all metadata and embedded videos from a specific playlist.
     Saves to data/raw/playlists/<playlist_id>.json.
-    Gracefully skips unviewable mix playlists without breaking pipeline.
+    Skips extraction if already cached on disk and skip_existing is True.
     """
     pid = extract_canonical_playlist_id(playlist_id_or_url, playlist_id_or_url) or playlist_id_or_url
+    raw_path = config.playlists_raw_dir / f"{pid}.json"
+
+    # Check if already cached
+    if skip_existing and raw_path.exists() and not dry_run:
+        cached_data = load_raw_playlist_file(raw_path)
+        cached_entries = cached_data.get("entries", [])
+        if cached_entries:
+            title = cached_data.get("playlist_title") or pid
+            print(f"  {green(CHECK_MARK)} Playlist '{cyan(title)}' ({dim(pid)}): Cached on disk ({len(cached_entries)} videos). Skipping.")
+            return ExtractionResult(
+                source_name=f"playlist:{pid}",
+                playlist_id=pid,
+                playlist_title=title,
+                playlist_description=cached_data.get("description"),
+                channel_name=cached_data.get("channel"),
+                channel_id=cached_data.get("channel_id"),
+                entries=cached_entries,
+                errors=[],
+                total_processed=len(cached_entries),
+                success_count=len(cached_entries),
+                unavailable_count=0,
+                failed_count=0,
+            )
+
     print(bold(f"\nExtracting Playlist: {cyan(pid)}"))
     if limit:
         print(f"Limit: {cyan(str(limit))} videos")
@@ -151,7 +201,6 @@ def scrape_single_playlist(
         return result
 
     if not dry_run and result.entries:
-        raw_path = config.playlists_raw_dir / f"{result.playlist_id}.json"
         save_raw_extraction(
             output_path=raw_path,
             source_name=f"playlist:{result.playlist_id}",
@@ -178,11 +227,13 @@ def scrape_user_playlists(
     config: ScraperConfig,
     playlist_limit: Optional[int] = None,
     video_limit: Optional[int] = None,
+    skip_existing: bool = True,
     dry_run: bool = False,
 ) -> List[ExtractionResult]:
     """
     Discovers all user playlists from the YouTube account and extracts each one.
     Resilient: an error in one playlist will never interrupt the others.
+    Skips playlists that are already cached in data/raw/playlists/ unless forced.
     """
     print(bold("\n--- Discovering User Playlists ---"))
     discovered = discover_user_playlists(config, limit=playlist_limit)
@@ -205,6 +256,7 @@ def scrape_user_playlists(
                 playlist_id_or_url=pl["id"],
                 config=config,
                 limit=video_limit,
+                skip_existing=skip_existing,
                 dry_run=dry_run,
             )
             results.append(res)

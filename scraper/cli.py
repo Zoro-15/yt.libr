@@ -1,7 +1,7 @@
 """
 Command-Line Interface for YouTube Library Scraper.
 Provides doctor diagnostics, auth testing, scraping (Watch Later, Liked, User Playlists),
-merging, validation, and statistics.
+merging, validation, and statistics with smart disk-caching to avoid redundant scraping.
 """
 
 import argparse
@@ -164,6 +164,7 @@ def main(args: Optional[list] = None) -> int:
         help="Extract cookies directly from a desktop browser (chrome, firefox, edge, brave, etc.)",
     )
     common_parser.add_argument("--data-dir", dest="data_dir", help="Path to data output directory")
+    common_parser.add_argument("--force", action="store_true", help="Force re-extraction even if data is already cached on disk")
     common_parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose output")
 
     parser = argparse.ArgumentParser(
@@ -245,6 +246,8 @@ def main(args: Optional[list] = None) -> int:
         data_dir_override=parsed_args.data_dir,
     )
 
+    skip_existing = not getattr(parsed_args, "force", False)
+
     if parsed_args.command == "doctor":
         return run_doctor(config)
 
@@ -269,16 +272,29 @@ def main(args: Optional[list] = None) -> int:
 
         target = parsed_args.scrape_source
         if target == "watch-later":
-            scrape_source("watch_later", config, limit=parsed_args.limit, dry_run=parsed_args.dry_run)
+            scrape_source(
+                "watch_later",
+                config,
+                limit=parsed_args.limit,
+                skip_existing=skip_existing,
+                dry_run=parsed_args.dry_run,
+            )
             return 0
         elif target == "liked":
-            scrape_source("liked", config, limit=parsed_args.limit, dry_run=parsed_args.dry_run)
+            scrape_source(
+                "liked",
+                config,
+                limit=parsed_args.limit,
+                skip_existing=skip_existing,
+                dry_run=parsed_args.dry_run,
+            )
             return 0
         elif target == "playlists":
             scrape_user_playlists(
                 config=config,
                 playlist_limit=parsed_args.playlist_limit,
                 video_limit=parsed_args.limit,
+                skip_existing=skip_existing,
                 dry_run=parsed_args.dry_run,
             )
             return 0
@@ -287,16 +303,34 @@ def main(args: Optional[list] = None) -> int:
                 playlist_id_or_url=parsed_args.playlist_target,
                 config=config,
                 limit=parsed_args.limit,
+                skip_existing=skip_existing,
                 dry_run=parsed_args.dry_run,
             )
             return 0
         elif target == "all":
             print(bold("=== Scraping YouTube Library (Watch Later, Liked & Playlists) ==="))
-            scrape_source("watch_later", config, limit=parsed_args.limit, dry_run=parsed_args.dry_run)
-            scrape_source("liked", config, limit=parsed_args.limit, dry_run=parsed_args.dry_run)
+            scrape_source(
+                "watch_later",
+                config,
+                limit=parsed_args.limit,
+                skip_existing=skip_existing,
+                dry_run=parsed_args.dry_run,
+            )
+            scrape_source(
+                "liked",
+                config,
+                limit=parsed_args.limit,
+                skip_existing=skip_existing,
+                dry_run=parsed_args.dry_run,
+            )
 
             if parsed_args.include_playlists:
-                scrape_user_playlists(config, video_limit=parsed_args.limit, dry_run=parsed_args.dry_run)
+                scrape_user_playlists(
+                    config,
+                    video_limit=parsed_args.limit,
+                    skip_existing=skip_existing,
+                    dry_run=parsed_args.dry_run,
+                )
 
             if not parsed_args.dry_run and not parsed_args.no_merge:
                 run_merge_pipeline(config)

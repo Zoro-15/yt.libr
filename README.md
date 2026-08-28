@@ -71,8 +71,18 @@ This tool deals with authenticated YouTube data (private playlists: `:ytwatchlat
 
 Follow these exact steps on your Android device:
 
-### Step 1: Install Termux & Clone Repository
-Open Termux and run:
+### Step 1: Install Termux & Setup Repository
+Open Termux on your phone and run:
+
+**If you already cloned the repository (`~/yt.libr` exists):**
+```bash
+cd ~/yt.libr
+git pull origin main
+chmod +x scripts/install.sh
+./scripts/install.sh
+```
+
+**For a fresh installation:**
 ```bash
 # 1. Update Termux packages
 pkg update -y && pkg upgrade -y
@@ -91,6 +101,7 @@ cd yt.libr
 chmod +x scripts/install.sh
 ./scripts/install.sh
 ```
+
 
 ### Step 2: Export YouTube Cookies on Android
 Termux cannot read browser cookies directly due to Android app sandboxing. You need a `cookies.txt` file:

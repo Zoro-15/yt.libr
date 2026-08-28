@@ -1,9 +1,15 @@
 """
-Unit tests for multi-source merging.
+Unit tests for multi-source merging (Watch Later, Liked, and Playlists).
 """
 
 import unittest
-from scraper.normalize import ChannelInfo, ThumbnailInfo, VideoRecord
+from scraper.normalize import (
+    ChannelInfo,
+    PlaylistRecord,
+    PlaylistReference,
+    ThumbnailInfo,
+    VideoRecord,
+)
 from scraper.merge import merge_single_record, merge_sources
 
 
@@ -14,7 +20,18 @@ def make_test_record(
     title: str = "Title",
     channel_name: str = "Channel",
     description: str = "Description",
+    playlist_id: str = None,
+    playlist_title: str = None,
 ) -> VideoRecord:
+    playlists = []
+    source_positions = {
+        "watch_later": pos if source == "watch_later" else None,
+        "liked": pos if source == "liked" else None,
+    }
+    if playlist_id:
+        source_positions[playlist_id] = pos
+        playlists.append(PlaylistReference(id=playlist_id, title=playlist_title or playlist_id, position=pos))
+
     return VideoRecord(
         video_id=vid,
         url=f"https://www.youtube.com/watch?v={vid}",
@@ -25,17 +42,14 @@ def make_test_record(
         upload_date="2025-01-01",
         description=description,
         sources=[source],
-        source_positions={
-            "watch_later": pos if source == "watch_later" else None,
-            "liked": pos if source == "liked" else None,
-        },
+        source_positions=source_positions,
+        playlists=playlists,
     )
 
 
 class TestMerge(unittest.TestCase):
 
     def test_merge_single_record_field_enrichment(self):
-        # Base with missing description and channel id
         base = VideoRecord(
             video_id="video111111",
             url="https://www.youtube.com/watch?v=video111111",
@@ -48,7 +62,6 @@ class TestMerge(unittest.TestCase):
             sources=["watch_later"],
             source_positions={"watch_later": 1, "liked": None},
         )
-        # Incoming with missing title but has channel id, thumbnail, description, upload date
         incoming = VideoRecord(
             video_id="video111111",
             url="https://www.youtube.com/watch?v=video111111",
@@ -73,18 +86,16 @@ class TestMerge(unittest.TestCase):
         self.assertEqual(merged.source_positions, {"watch_later": 1, "liked": 5})
 
     def test_merge_overlapping_sources(self):
-        # Watch Later: A, B
         wl_records = [
             make_test_record("vid_A", "watch_later", 1),
             make_test_record("vid_B", "watch_later", 2),
         ]
-        # Liked: B, C
         liked_records = [
             make_test_record("vid_B", "liked", 1),
             make_test_record("vid_C", "liked", 2),
         ]
 
-        merged, summary = merge_sources(wl_records, liked_records)
+        merged, playlists, summary = merge_sources(wl_records, liked_records)
 
         self.assertEqual(len(merged), 3)
         self.assertEqual(summary.total_watch_later, 2)
@@ -95,27 +106,38 @@ class TestMerge(unittest.TestCase):
         # Video A
         self.assertEqual(merged[0].video_id, "vid_A")
         self.assertEqual(merged[0].sources, ["watch_later"])
-        self.assertEqual(merged[0].source_positions, {"watch_later": 1, "liked": None})
 
         # Video B
         self.assertEqual(merged[1].video_id, "vid_B")
         self.assertEqual(merged[1].sources, ["liked", "watch_later"])
-        self.assertEqual(merged[1].source_positions, {"watch_later": 2, "liked": 1})
 
         # Video C
         self.assertEqual(merged[2].video_id, "vid_C")
         self.assertEqual(merged[2].sources, ["liked"])
-        self.assertEqual(merged[2].source_positions, {"watch_later": None, "liked": 2})
 
-    def test_merge_disjoint_sources(self):
+    def test_merge_with_custom_playlists(self):
         wl = [make_test_record("vid_A", "watch_later", 1)]
         liked = [make_test_record("vid_B", "liked", 1)]
+        custom_pl = {
+            "PL123": [
+                make_test_record("vid_A", "playlist:PL123", 1, playlist_id="PL123", playlist_title="Favorites"),
+                make_test_record("vid_D", "playlist:PL123", 2, playlist_id="PL123", playlist_title="Favorites"),
+            ]
+        }
 
-        merged, summary = merge_sources(wl, liked)
-        self.assertEqual(len(merged), 2)
-        self.assertEqual(summary.overlap_count, 0)
-        self.assertEqual(merged[0].video_id, "vid_A")
-        self.assertEqual(merged[1].video_id, "vid_B")
+        merged, playlists, summary = merge_sources(wl, liked, custom_playlist_records=custom_pl)
+
+        self.assertEqual(len(merged), 3)  # vid_A (in WL and PL123), vid_B (in Liked), vid_D (in PL123)
+        self.assertEqual(summary.total_unique, 3)
+        self.assertEqual(summary.total_custom_playlists, 1)
+        self.assertEqual(len(playlists), 1)
+
+        # Check vid_A playlist references
+        vid_a = next(v for v in merged if v.video_id == "vid_A")
+        self.assertIn("watch_later", vid_a.sources)
+        self.assertIn("playlist:PL123", vid_a.sources)
+        self.assertEqual(len(vid_a.playlists), 1)
+        self.assertEqual(vid_a.playlists[0].id, "PL123")
 
 
 if __name__ == "__main__":

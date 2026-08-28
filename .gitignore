@@ -8,13 +8,17 @@ cookies*.txt
 !.env.example
 
 # Raw and Generated Private Data
+data/raw/**/*.json
 data/raw/*.json
+data/raw/playlists/
 !data/raw/.gitkeep
+!data/raw/playlists/.gitkeep
 data/processed/*.json
 !data/processed/.gitkeep
 data/logs/*.json
 !data/logs/.gitkeep
 data/checkpoints/
+
 
 # Python artifacts
 __pycache__/

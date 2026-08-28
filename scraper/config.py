@@ -51,8 +51,20 @@ class ScraperConfig:
         return self.raw_dir / "liked.json"
 
     @property
+    def playlists_raw_dir(self) -> Path:
+        return self.raw_dir / "playlists"
+
+    @property
+    def playlists_index_raw_path(self) -> Path:
+        return self.raw_dir / "playlists_index.json"
+
+    @property
     def videos_processed_path(self) -> Path:
         return self.processed_dir / "videos.json"
+
+    @property
+    def playlists_processed_path(self) -> Path:
+        return self.processed_dir / "playlists.json"
 
     @property
     def errors_log_path(self) -> Path:
@@ -61,10 +73,12 @@ class ScraperConfig:
     def ensure_directories(self) -> None:
         """Create necessary directories if they do not exist."""
         self.raw_dir.mkdir(parents=True, exist_ok=True)
+        self.playlists_raw_dir.mkdir(parents=True, exist_ok=True)
         self.processed_dir.mkdir(parents=True, exist_ok=True)
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         if self.save_checkpoints:
             self.checkpoints_dir.mkdir(parents=True, exist_ok=True)
+
 
     @classmethod
     def load(

@@ -1,6 +1,6 @@
 """
 Validation module.
-Performs thorough schema, uniqueness, and integrity validation on videos.json.
+Performs thorough schema, uniqueness, and integrity validation on videos.json and playlists.json.
 """
 
 from dataclasses import dataclass, field
@@ -24,13 +24,14 @@ FORBIDDEN_PERSONAL_FIELDS = {
     "classification_status",
 }
 
-VALID_SOURCE_NAMES = {"watch_later", "liked"}
+VALID_BASE_SOURCES = {"watch_later", "liked"}
 
 
 @dataclass
 class ValidationReport:
     is_valid: bool
     total_videos: int
+    total_playlists: int
     schema_version: Optional[int]
     errors: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
@@ -39,9 +40,10 @@ class ValidationReport:
         from scraper.utils import bold, green, red, yellow, cyan
 
         print(bold("\n--- YouTube Library Scraper — Validation Report ---"))
-        print(f"Total Videos Checked: {cyan(str(self.total_videos))}")
-        print(f"Schema Version:       {cyan(str(self.schema_version))}")
-        print(f"Status:               {green('PASSED') if self.is_valid else red('FAILED')}")
+        print(f"Total Videos Checked:    {cyan(str(self.total_videos))}")
+        print(f"Total Playlists Checked: {cyan(str(self.total_playlists))}")
+        print(f"Schema Version:          {cyan(str(self.schema_version))}")
+        print(f"Status:                  {green('PASSED') if self.is_valid else red('FAILED')}")
 
         if self.errors:
             print(red(f"\nErrors ({len(self.errors)}):"))
@@ -58,17 +60,18 @@ class ValidationReport:
                 print(f"  ... and {len(self.warnings) - 20} more warnings.")
 
         if self.is_valid and not self.warnings:
-            print(green("\nAll checks passed cleanly. JSON is fully compliant and ready for import!"))
+            print(green("\nAll checks passed cleanly. Output is fully compliant and ready for import!"))
 
 
-def validate_videos_json(file_path: Path) -> ValidationReport:
+def validate_videos_json(file_path: Path, playlists_path: Optional[Path] = None) -> ValidationReport:
     """
-    Validates a processed videos.json file against the schema requirements.
+    Validates a processed videos.json (and optional playlists.json) against schema requirements.
     """
     if not file_path.exists():
         return ValidationReport(
             is_valid=False,
             total_videos=0,
+            total_playlists=0,
             schema_version=None,
             errors=[f"File not found: {file_path}"],
         )
@@ -80,6 +83,7 @@ def validate_videos_json(file_path: Path) -> ValidationReport:
         return ValidationReport(
             is_valid=False,
             total_videos=0,
+            total_playlists=0,
             schema_version=None,
             errors=[f"Failed to parse JSON: {e}"],
         )
@@ -88,6 +92,7 @@ def validate_videos_json(file_path: Path) -> ValidationReport:
         return ValidationReport(
             is_valid=False,
             total_videos=0,
+            total_playlists=0,
             schema_version=None,
             errors=["Root element must be a JSON Object."],
         )
@@ -112,6 +117,7 @@ def validate_videos_json(file_path: Path) -> ValidationReport:
         return ValidationReport(
             is_valid=False,
             total_videos=0,
+            total_playlists=0,
             schema_version=schema_version,
             errors=errors,
             warnings=warnings,
@@ -121,7 +127,6 @@ def validate_videos_json(file_path: Path) -> ValidationReport:
     if total_reported != len(videos):
         warnings.append(f"Header 'total_videos' ({total_reported}) does not match array length ({len(videos)}).")
 
-    # Validate individual video items
     seen_ids: Set[str] = set()
 
     for idx, video in enumerate(videos):
@@ -158,14 +163,9 @@ def validate_videos_json(file_path: Path) -> ValidationReport:
         if not isinstance(sources, list) or not sources:
             errors.append(f"{ref}: 'sources' must be a non-empty list.")
         else:
-            invalid_sources = set(sources) - VALID_SOURCE_NAMES
-            if invalid_sources:
-                errors.append(f"{ref}: Invalid source name(s): {', '.join(invalid_sources)}.")
-
-        # Source positions check
-        positions = video.get("source_positions")
-        if not isinstance(positions, dict):
-            warnings.append(f"{ref}: 'source_positions' is missing or not a dict.")
+            for s in sources:
+                if s not in VALID_BASE_SOURCES and not s.startswith("playlist:"):
+                    errors.append(f"{ref}: Invalid source name '{s}'.")
 
         # Channel check
         channel = video.get("channel")
@@ -192,11 +192,56 @@ def validate_videos_json(file_path: Path) -> ValidationReport:
             if not isinstance(upload_date, str) or not re.match(r"^\d{4}-\d{2}-\d{2}$", upload_date):
                 warnings.append(f"{ref}: 'upload_date' '{upload_date}' is not in YYYY-MM-DD format.")
 
+        # Playlists list check
+        pl_refs = video.get("playlists")
+        if pl_refs is not None:
+            if not isinstance(pl_refs, list):
+                errors.append(f"{ref}: 'playlists' must be a list of playlist reference objects.")
+            else:
+                for pl in pl_refs:
+                    if not isinstance(pl, dict) or not pl.get("id"):
+                        errors.append(f"{ref}: Malformed playlist reference in 'playlists' array.")
+
+    # Validate playlists.json if present
+    total_playlists = 0
+    if playlists_path and playlists_path.exists():
+        try:
+            with open(playlists_path, "r", encoding="utf-8") as f:
+                pl_data = json.load(f)
+            
+            if isinstance(pl_data, dict):
+                pls = pl_data.get("playlists", [])
+                total_playlists = len(pls)
+                seen_pids: Set[str] = set()
+
+                for pidx, pl in enumerate(pls):
+                    pref = f"Playlist #{pidx + 1}"
+                    if not isinstance(pl, dict):
+                        errors.append(f"{pref}: Record is not an object.")
+                        continue
+                    
+                    pid = pl.get("playlist_id")
+                    if not pid or not isinstance(pid, str):
+                        errors.append(f"{pref}: Missing or invalid 'playlist_id'.")
+                        continue
+
+                    if pid in seen_pids:
+                        errors.append(f"Playlist '{pid}': Duplicate playlist_id.")
+                    seen_pids.add(pid)
+
+                    # Check video_ids
+                    vids = pl.get("video_ids", [])
+                    if not isinstance(vids, list):
+                        errors.append(f"Playlist '{pid}': 'video_ids' must be a list.")
+        except Exception as e:
+            errors.append(f"Failed to validate playlists.json: {e}")
+
     is_valid = len(errors) == 0
 
     return ValidationReport(
         is_valid=is_valid,
         total_videos=len(videos),
+        total_playlists=total_playlists,
         schema_version=schema_version,
         errors=errors,
         warnings=warnings,

@@ -1,6 +1,6 @@
 """
 Stats module.
-Computes comprehensive metrics and summary statistics for the video library.
+Computes comprehensive metrics and summary statistics for the video library and playlists.
 """
 
 from dataclasses import dataclass
@@ -16,9 +16,12 @@ class LibraryStats:
     total_unique: int
     watch_later_total: int
     liked_total: int
-    both_sources_count: int
+    total_playlists: int
+    playlist_video_refs: int
+    both_wl_and_liked: int
     watch_later_only: int
     liked_only: int
+    playlists_only: int
     missing_thumbnails: int
     missing_duration: int
     missing_channel: int
@@ -40,12 +43,14 @@ class LibraryStats:
         print(f"Total Unique Videos:      {cyan(f'{self.total_unique:,}')}")
         print(f"Watch Later Videos:       {cyan(f'{self.watch_later_total:,}')}")
         print(f"Liked Videos:             {cyan(f'{self.liked_total:,}')}")
+        print(f"Custom Playlists:         {cyan(f'{self.total_playlists:,}')}")
         print(SEP_LINE)
-        print(f"Appearing in Both:        {green(f'{self.both_sources_count:,}')}")
+        print(f"Appearing in WL & Liked:  {green(f'{self.both_wl_and_liked:,}')}")
         print(f"Watch Later Only:         {self.watch_later_only:,}")
         print(f"Liked Only:               {self.liked_only:,}")
+        if self.playlists_only > 0:
+            print(f"Playlists Only:           {self.playlists_only:,}")
         print(SEP_LINE)
-
         print(f"Total Known Playtime:     {cyan(self.format_total_duration())}")
         print(f"Missing Thumbnails:       {yellow(f'{self.missing_thumbnails:,}') if self.missing_thumbnails else green('0')}")
         print(f"Missing Duration:         {yellow(f'{self.missing_duration:,}') if self.missing_duration else green('0')}")
@@ -54,9 +59,12 @@ class LibraryStats:
         print(bold("==================================================\n"))
 
 
-def compute_library_stats(videos_json_path: Path) -> Optional[LibraryStats]:
+def compute_library_stats(
+    videos_json_path: Path,
+    playlists_json_path: Optional[Path] = None,
+) -> Optional[LibraryStats]:
     """
-    Reads videos.json and calculates all metrics.
+    Reads videos.json and optional playlists.json to calculate all metrics.
     """
     if not videos_json_path.exists():
         return None
@@ -68,26 +76,23 @@ def compute_library_stats(videos_json_path: Path) -> Optional[LibraryStats]:
         return None
 
     videos = data.get("videos", []) if isinstance(data, dict) else []
-    if not videos:
-        return LibraryStats(
-            total_unique=0,
-            watch_later_total=0,
-            liked_total=0,
-            both_sources_count=0,
-            watch_later_only=0,
-            liked_only=0,
-            missing_thumbnails=0,
-            missing_duration=0,
-            missing_channel=0,
-            missing_upload_date=0,
-            total_duration_seconds=0,
-        )
+
+    total_playlists = 0
+    if playlists_json_path and playlists_json_path.exists():
+        try:
+            with open(playlists_json_path, "r", encoding="utf-8") as pf:
+                pldata = json.load(pf)
+                total_playlists = len(pldata.get("playlists", []))
+        except Exception:
+            pass
 
     wl_count = 0
     liked_count = 0
     both_count = 0
     wl_only = 0
     liked_only = 0
+    pl_only = 0
+    pl_refs = 0
     missing_thumb = 0
     missing_dur = 0
     missing_chan = 0
@@ -98,6 +103,7 @@ def compute_library_stats(videos_json_path: Path) -> Optional[LibraryStats]:
         sources = v.get("sources", [])
         is_wl = "watch_later" in sources
         is_liked = "liked" in sources
+        has_pl = any(s.startswith("playlist:") for s in sources) or bool(v.get("playlists"))
 
         if is_wl:
             wl_count += 1
@@ -106,10 +112,14 @@ def compute_library_stats(videos_json_path: Path) -> Optional[LibraryStats]:
 
         if is_wl and is_liked:
             both_count += 1
-        elif is_wl:
+        elif is_wl and not has_pl:
             wl_only += 1
-        elif is_liked:
+        elif is_liked and not has_pl:
             liked_only += 1
+        elif has_pl and not is_wl and not is_liked:
+            pl_only += 1
+
+        pl_refs += len(v.get("playlists", []))
 
         # Check metadata completeness
         thumb = v.get("thumbnail", {})
@@ -133,9 +143,12 @@ def compute_library_stats(videos_json_path: Path) -> Optional[LibraryStats]:
         total_unique=len(videos),
         watch_later_total=wl_count,
         liked_total=liked_count,
-        both_sources_count=both_count,
+        total_playlists=total_playlists,
+        playlist_video_refs=pl_refs,
+        both_wl_and_liked=both_count,
         watch_later_only=wl_only,
         liked_only=liked_only,
+        playlists_only=pl_only,
         missing_thumbnails=missing_thumb,
         missing_duration=missing_dur,
         missing_channel=missing_chan,

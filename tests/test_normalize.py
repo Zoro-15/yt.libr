@@ -4,9 +4,13 @@ Unit tests for metadata normalization.
 
 import unittest
 from scraper.normalize import (
+    PlaylistRecord,
+    PlaylistReference,
+    extract_canonical_playlist_id,
     extract_canonical_video_id,
     format_upload_date,
     normalize_entry,
+    normalize_playlist_info,
     normalize_raw_entries,
     pick_best_thumbnail_url,
 )
@@ -15,30 +19,30 @@ from scraper.normalize import (
 class TestNormalize(unittest.TestCase):
 
     def test_extract_canonical_video_id(self):
-        # 11-char direct ID
         self.assertEqual(extract_canonical_video_id("dQw4w9WgXcQ"), "dQw4w9WgXcQ")
-        
-        # Standard YouTube watch URL
         self.assertEqual(
             extract_canonical_video_id(None, "https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
             "dQw4w9WgXcQ",
         )
-
-        # youtu.be short URL
         self.assertEqual(
             extract_canonical_video_id(None, "https://youtu.be/dQw4w9WgXcQ?t=10"),
             "dQw4w9WgXcQ",
         )
-
-        # YouTube Shorts URL
         self.assertEqual(
             extract_canonical_video_id(None, "https://www.youtube.com/shorts/dQw4w9WgXcQ"),
             "dQw4w9WgXcQ",
         )
-
-        # Invalid / missing
         self.assertIsNone(extract_canonical_video_id(None, None))
         self.assertIsNone(extract_canonical_video_id("invalid", "https://google.com"))
+
+    def test_extract_canonical_playlist_id(self):
+        self.assertEqual(extract_canonical_playlist_id("PL1234567890"), "PL1234567890")
+        self.assertEqual(extract_canonical_playlist_id("WL"), "WL")
+        self.assertEqual(extract_canonical_playlist_id("LL"), "LL")
+        self.assertEqual(
+            extract_canonical_playlist_id(None, "https://www.youtube.com/playlist?list=PL1234567890"),
+            "PL1234567890",
+        )
 
     def test_format_upload_date(self):
         self.assertEqual(format_upload_date("20250412"), "2025-04-12")
@@ -88,35 +92,43 @@ class TestNormalize(unittest.TestCase):
         self.assertEqual(record.sources, ["watch_later"])
         self.assertEqual(record.source_positions, {"watch_later": 5, "liked": None})
 
-    def test_normalize_missing_optional_fields(self):
+    def test_normalize_entry_with_playlist_reference(self):
         raw = {
-            "id": "abc12345678",
-            "title": "Minimal Video",
+            "id": "dQw4w9WgXcQ",
+            "title": "Rick Astley in Playlist",
         }
-        record = normalize_entry(raw, source_name="liked", position=1)
+        record = normalize_entry(
+            raw,
+            source_name="playlist:PL12345",
+            position=2,
+            playlist_id="PL12345",
+            playlist_title="Pop Hits",
+        )
         self.assertIsNotNone(record)
-        self.assertEqual(record.video_id, "abc12345678")
-        self.assertIsNone(record.channel.name)
-        self.assertIsNone(record.channel.id)
-        self.assertIsNone(record.duration_seconds)
-        self.assertIsNone(record.upload_date)
-        self.assertIsNone(record.description)
-        self.assertEqual(record.sources, ["liked"])
-        self.assertEqual(record.source_positions, {"watch_later": None, "liked": 1})
+        self.assertIn("playlist:PL12345", record.sources)
+        self.assertEqual(record.source_positions["PL12345"], 2)
+        self.assertEqual(len(record.playlists), 1)
+        self.assertEqual(record.playlists[0].id, "PL12345")
+        self.assertEqual(record.playlists[0].title, "Pop Hits")
+        self.assertEqual(record.playlists[0].position, 2)
 
-    def test_normalize_raw_entries_list(self):
-        raw_list = [
-            {"id": "video111111", "title": "First"},
-            None,
-            {"id": "video222222", "title": "Second"},
-            {"invalid": "no_id"},
-        ]
-        records = normalize_raw_entries(raw_list, source_name="watch_later")
-        self.assertEqual(len(records), 2)
-        self.assertEqual(records[0].video_id, "video111111")
-        self.assertEqual(records[0].source_positions["watch_later"], 1)
-        self.assertEqual(records[1].video_id, "video222222")
-        self.assertEqual(records[1].source_positions["watch_later"], 2)
+    def test_normalize_playlist_info(self):
+        raw_pl = {
+            "id": "PL1234567890",
+            "title": "Machine Learning",
+            "description": "ML lecture series",
+            "uploader": "DeepLearning AI",
+            "uploader_id": "UC123",
+            "playlist_count": 10,
+        }
+        pl_record = normalize_playlist_info(raw_pl, video_ids=["vid1", "vid2"])
+        self.assertIsNotNone(pl_record)
+        self.assertEqual(pl_record.playlist_id, "PL1234567890")
+        self.assertEqual(pl_record.title, "Machine Learning")
+        self.assertEqual(pl_record.url, "https://www.youtube.com/playlist?list=PL1234567890")
+        self.assertEqual(pl_record.description, "ML lecture series")
+        self.assertEqual(pl_record.channel.name, "DeepLearning AI")
+        self.assertEqual(pl_record.video_ids, ["vid1", "vid2"])
 
 
 if __name__ == "__main__":

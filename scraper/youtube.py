@@ -1,6 +1,6 @@
 """
 YouTube extraction module.
-Wraps yt-dlp to extract playlist metadata (Watch Later and Liked Videos)
+Wraps yt-dlp to extract playlist metadata (Watch Later, Liked Videos, User Playlists, and custom Playlists)
 without downloading media, with support for batching, limits, progress tracking, and checkpoints.
 """
 
@@ -11,7 +11,10 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from scraper.config import ScraperConfig
-from scraper.normalize import extract_canonical_video_id
+from scraper.normalize import (
+    extract_canonical_playlist_id,
+    extract_canonical_video_id,
+)
 from scraper.utils import iso_now, print_progress
 
 
@@ -24,7 +27,11 @@ PLAYLIST_URL_MAP = {
 @dataclass
 class ExtractionResult:
     source_name: str
+    playlist_id: str
     playlist_title: str
+    playlist_description: Optional[str]
+    channel_name: Optional[str]
+    channel_id: Optional[str]
     entries: List[Dict[str, Any]]
     errors: List[Dict[str, Any]]
     total_processed: int
@@ -55,26 +62,8 @@ def is_entry_unavailable(entry: Optional[Dict[str, Any]]) -> Tuple[bool, str]:
     return False, ""
 
 
-def extract_youtube_playlist(
-    source_name: str,
-    config: ScraperConfig,
-    limit: Optional[int] = None,
-    dry_run: bool = False,
-    progress_callback: Optional[Callable[[int, Optional[int], int, int, int], None]] = None,
-) -> ExtractionResult:
-    """
-    Extracts metadata entries from a YouTube playlist using yt-dlp.
-    Does NOT download media files.
-    """
-    try:
-        import yt_dlp
-    except ImportError:
-        raise RuntimeError("yt-dlp is required for YouTube extraction. Run 'pip install yt-dlp'.")
-
-    playlist_url = PLAYLIST_URL_MAP.get(source_name)
-    if not playlist_url:
-        raise ValueError(f"Unknown source name: '{source_name}'. Expected 'watch_later' or 'liked'.")
-
+def get_ydl_options(config: ScraperConfig, limit: Optional[int] = None) -> Dict[str, Any]:
+    """Build standard yt-dlp options dictionary."""
     ydl_opts: Dict[str, Any] = {
         "skip_download": True,
         "extract_flat": "in_playlist",
@@ -91,6 +80,92 @@ def extract_youtube_playlist(
     if limit and limit > 0:
         ydl_opts["playlistend"] = limit
 
+    return ydl_opts
+
+
+def discover_user_playlists(
+    config: ScraperConfig,
+    limit: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Discovers all playlists created or saved in the authenticated user's YouTube account.
+    Queries https://www.youtube.com/feed/playlists.
+    """
+    try:
+        import yt_dlp
+    except ImportError:
+        raise RuntimeError("yt-dlp is required. Run 'pip install yt-dlp'.")
+
+    feed_url = "https://www.youtube.com/feed/playlists"
+    ydl_opts = get_ydl_options(config, limit=limit)
+
+    discovered_playlists: List[Dict[str, Any]] = []
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(feed_url, download=False)
+            if not info:
+                return []
+
+            entries = info.get("entries") or []
+            for item in entries:
+                if not item:
+                    continue
+                pid = extract_canonical_playlist_id(item.get("id"), item.get("url"))
+                if pid:
+                    discovered_playlists.append({
+                        "id": pid,
+                        "title": item.get("title") or f"Playlist {pid}",
+                        "url": f"https://www.youtube.com/playlist?list={pid}",
+                        "description": item.get("description"),
+                        "channel": item.get("channel") or item.get("uploader"),
+                        "channel_id": item.get("channel_id") or item.get("uploader_id"),
+                        "playlist_count": item.get("playlist_count"),
+                    })
+    except Exception as e:
+        # Fallback check if direct feed failed
+        pass
+
+    return discovered_playlists
+
+
+def extract_youtube_playlist(
+    source_name_or_url: str,
+    config: ScraperConfig,
+    limit: Optional[int] = None,
+    dry_run: bool = False,
+    progress_callback: Optional[Callable[[int, Optional[int], int, int, int], None]] = None,
+) -> ExtractionResult:
+    """
+    Extracts metadata entries from a YouTube playlist using yt-dlp.
+    Supports 'watch_later', 'liked', or arbitrary playlist URL/ID (e.g. 'PL...').
+    Does NOT download media files.
+    """
+    try:
+        import yt_dlp
+    except ImportError:
+        raise RuntimeError("yt-dlp is required for YouTube extraction. Run 'pip install yt-dlp'.")
+
+    # Determine playlist URL and ID
+    if source_name_or_url == "watch_later":
+        playlist_url = PLAYLIST_URL_MAP["watch_later"]
+        playlist_id = "WL"
+        source_name = "watch_later"
+    elif source_name_or_url == "liked":
+        playlist_url = PLAYLIST_URL_MAP["liked"]
+        playlist_id = "LL"
+        source_name = "liked"
+    else:
+        # Custom playlist URL or ID
+        extracted_id = extract_canonical_playlist_id(source_name_or_url, source_name_or_url)
+        playlist_id = extracted_id or source_name_or_url
+        if source_name_or_url.startswith("http"):
+            playlist_url = source_name_or_url
+        else:
+            playlist_url = f"https://www.youtube.com/playlist?list={playlist_id}"
+        source_name = f"playlist:{playlist_id}"
+
+    ydl_opts = get_ydl_options(config, limit=limit)
 
     valid_entries: List[Dict[str, Any]] = []
     errors: List[Dict[str, Any]] = []
@@ -100,15 +175,18 @@ def extract_youtube_playlist(
     failed_count = 0
     total_processed = 0
 
-    checkpoint_file = config.checkpoints_dir / f"{source_name}_checkpoint.json"
+    checkpoint_file = config.checkpoints_dir / f"{playlist_id}_checkpoint.json"
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(playlist_url, download=False)
         if not info:
-            raise RuntimeError(f"Could not retrieve playlist info for '{source_name}'. Check cookies and internet connection.")
+            raise RuntimeError(f"Could not retrieve playlist info for '{source_name_or_url}'. Check cookies and internet connection.")
 
         raw_entries_generator = info.get("entries")
-        playlist_title = info.get("title", source_name.replace("_", " ").title())
+        playlist_title = info.get("title") or (source_name.replace("_", " ").title())
+        playlist_description = info.get("description") or None
+        channel_name = info.get("channel") or info.get("uploader") or None
+        channel_id = info.get("channel_id") or info.get("uploader_id") or None
         reported_total = info.get("playlist_count") or (limit if limit else None)
 
         if raw_entries_generator is not None:
@@ -161,6 +239,7 @@ def extract_youtube_playlist(
                         with open(temp_cp, "w", encoding="utf-8") as cp_f:
                             json.dump({
                                 "source": source_name,
+                                "playlist_id": playlist_id,
                                 "total_processed": total_processed,
                                 "entries_count": len(valid_entries),
                                 "entries": valid_entries,
@@ -179,7 +258,11 @@ def extract_youtube_playlist(
 
     return ExtractionResult(
         source_name=source_name,
+        playlist_id=playlist_id,
         playlist_title=playlist_title,
+        playlist_description=playlist_description,
+        channel_name=channel_name,
+        channel_id=channel_id,
         entries=valid_entries,
         errors=errors,
         total_processed=total_processed,

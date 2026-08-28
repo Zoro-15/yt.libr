@@ -1,6 +1,7 @@
 """
 Command-Line Interface for YouTube Library Scraper.
-Provides doctor diagnostics, auth testing, scraping, merging, validation, and statistics.
+Provides doctor diagnostics, auth testing, scraping (Watch Later, Liked, User Playlists),
+merging, validation, and statistics.
 """
 
 import argparse
@@ -11,7 +12,13 @@ from typing import Optional
 from scraper import __version__
 from scraper.auth import test_authentication, validate_cookie_file
 from scraper.config import ScraperConfig
-from scraper.extract import run_merge_pipeline, scrape_source
+from scraper.extract import (
+    run_merge_pipeline,
+    scrape_single_playlist,
+    scrape_source,
+    scrape_user_playlists,
+)
+from scraper.output import load_raw_playlists_index
 from scraper.stats import compute_library_stats
 from scraper.utils import (
     CHECK_MARK,
@@ -30,6 +37,7 @@ from scraper.utils import (
     yellow,
 )
 from scraper.validate import validate_videos_json
+from scraper.youtube import discover_user_playlists
 
 
 def run_doctor(config: ScraperConfig) -> int:
@@ -125,8 +133,28 @@ def run_auth_test(config: ScraperConfig) -> int:
         return 1
 
 
+def list_user_playlists(config: ScraperConfig) -> int:
+    """Discovers and lists all user playlists."""
+    print(bold("\n--- Fetching User Playlists from YouTube ---"))
+    discovered = discover_user_playlists(config)
+    if not discovered:
+        print(yellow("No custom playlists found in feed, or cookies do not have playlist permissions."))
+        return 1
+
+    print(f"Found {green(str(len(discovered)))} playlist(s):\n")
+    for idx, pl in enumerate(discovered, 1):
+        count_str = f"({pl['playlist_count']} videos)" if pl.get("playlist_count") is not None else ""
+        print(f"  {idx:2d}. {cyan(pl['title'])} {dim(count_str)}")
+        print(f"      ID:  {pl['id']}")
+        print(f"      URL: {pl['url']}")
+        if pl.get("channel"):
+            print(f"      By:  {pl['channel']}")
+        print()
+
+    return 0
+
+
 def main(args: Optional[list] = None) -> int:
-    # Common shared options for both root parser and subcommands
     common_parser = argparse.ArgumentParser(add_help=False)
     common_parser.add_argument("--config", dest="config_path", help="Path to custom config.json")
     common_parser.add_argument("--cookies", dest="cookies_path", help="Path to custom cookies.txt")
@@ -140,7 +168,7 @@ def main(args: Optional[list] = None) -> int:
 
     parser = argparse.ArgumentParser(
         prog="yt-library",
-        description="Android Termux YouTube Library Scraper — extracts metadata from Watch Later and Liked Videos.",
+        description="Android Termux & PC YouTube Library Scraper — extracts Watch Later, Liked Videos, and Playlists.",
         parents=[common_parser],
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -154,6 +182,11 @@ def main(args: Optional[list] = None) -> int:
     auth_parser = subparsers.add_parser("auth", parents=[common_parser], help="Authentication tools")
     auth_sub = auth_parser.add_subparsers(dest="auth_command", help="Auth subcommands")
     auth_sub.add_parser("test", parents=[common_parser], help="Verify private YouTube session access without downloading")
+
+    # Command: list
+    list_parser = subparsers.add_parser("list", parents=[common_parser], help="List YouTube resources")
+    list_sub = list_parser.add_subparsers(dest="list_target", help="Resource to list")
+    list_sub.add_parser("playlists", parents=[common_parser], help="Discover and list all user playlists")
 
     # Command: scrape
     scrape_parser = subparsers.add_parser("scrape", parents=[common_parser], help="Extract metadata from YouTube")
@@ -169,21 +202,34 @@ def main(args: Optional[list] = None) -> int:
     ll_p.add_argument("--limit", type=int, default=None, help="Limit number of videos to extract")
     ll_p.add_argument("--dry-run", action="store_true", help="Extract without saving to disk")
 
+    # scrape playlists (all user playlists)
+    pls_p = scrape_sub.add_parser("playlists", parents=[common_parser], help="Scrape all user playlists and embedded videos")
+    pls_p.add_argument("--playlist-limit", type=int, default=None, help="Max number of playlists to discover")
+    pls_p.add_argument("--limit", type=int, default=None, help="Max videos to extract per playlist")
+    pls_p.add_argument("--dry-run", action="store_true", help="Extract without saving to disk")
+
+    # scrape playlist <ID_or_URL>
+    pl_p = scrape_sub.add_parser("playlist", parents=[common_parser], help="Scrape a specific playlist by ID or URL")
+    pl_p.add_argument("playlist_target", help="Playlist ID (e.g. PLxxxxxx) or full YouTube Playlist URL")
+    pl_p.add_argument("--limit", type=int, default=None, help="Limit number of videos to extract")
+    pl_p.add_argument("--dry-run", action="store_true", help="Extract without saving to disk")
+
     # scrape all
-    all_p = scrape_sub.add_parser("all", parents=[common_parser], help="Scrape both Watch Later and Liked Videos")
+    all_p = scrape_sub.add_parser("all", parents=[common_parser], help="Scrape Watch Later, Liked, and User Playlists")
     all_p.add_argument("--limit", type=int, default=None, help="Limit number of videos per source")
+    all_p.add_argument("--include-playlists", action="store_true", default=True, help="Include user playlists in full scrape (default: True)")
+    all_p.add_argument("--no-playlists", action="store_false", dest="include_playlists", help="Skip user playlists during full scrape")
     all_p.add_argument("--dry-run", action="store_true", help="Extract without saving to disk")
     all_p.add_argument("--no-merge", action="store_true", help="Skip automatic merge after scraping")
 
     # Command: merge
-    subparsers.add_parser("merge", parents=[common_parser], help="Merge raw watch_later.json and liked.json into videos.json")
+    subparsers.add_parser("merge", parents=[common_parser], help="Merge raw watch_later, liked, and playlists into videos.json & playlists.json")
 
     # Command: validate
-    subparsers.add_parser("validate", parents=[common_parser], help="Validate videos.json schema and integrity")
+    subparsers.add_parser("validate", parents=[common_parser], help="Validate videos.json and playlists.json schema and integrity")
 
     # Command: stats
-    subparsers.add_parser("stats", parents=[common_parser], help="Show video library statistics and health report")
-
+    subparsers.add_parser("stats", parents=[common_parser], help="Show video library and playlist statistics")
 
     parsed_args = parser.parse_args(args)
 
@@ -199,7 +245,6 @@ def main(args: Optional[list] = None) -> int:
         data_dir_override=parsed_args.data_dir,
     )
 
-
     if parsed_args.command == "doctor":
         return run_doctor(config)
 
@@ -208,6 +253,13 @@ def main(args: Optional[list] = None) -> int:
             return run_auth_test(config)
         else:
             auth_parser.print_help()
+            return 0
+
+    elif parsed_args.command == "list":
+        if parsed_args.list_target == "playlists":
+            return list_user_playlists(config)
+        else:
+            list_parser.print_help()
             return 0
 
     elif parsed_args.command == "scrape":
@@ -222,10 +274,29 @@ def main(args: Optional[list] = None) -> int:
         elif target == "liked":
             scrape_source("liked", config, limit=parsed_args.limit, dry_run=parsed_args.dry_run)
             return 0
+        elif target == "playlists":
+            scrape_user_playlists(
+                config=config,
+                playlist_limit=parsed_args.playlist_limit,
+                video_limit=parsed_args.limit,
+                dry_run=parsed_args.dry_run,
+            )
+            return 0
+        elif target == "playlist":
+            scrape_single_playlist(
+                playlist_id_or_url=parsed_args.playlist_target,
+                config=config,
+                limit=parsed_args.limit,
+                dry_run=parsed_args.dry_run,
+            )
+            return 0
         elif target == "all":
-            print(bold("=== Scraping All Sources (Watch Later & Liked Videos) ==="))
+            print(bold("=== Scraping YouTube Library (Watch Later, Liked & Playlists) ==="))
             scrape_source("watch_later", config, limit=parsed_args.limit, dry_run=parsed_args.dry_run)
             scrape_source("liked", config, limit=parsed_args.limit, dry_run=parsed_args.dry_run)
+
+            if parsed_args.include_playlists:
+                scrape_user_playlists(config, video_limit=parsed_args.limit, dry_run=parsed_args.dry_run)
 
             if not parsed_args.dry_run and not parsed_args.no_merge:
                 run_merge_pipeline(config)
@@ -236,12 +307,18 @@ def main(args: Optional[list] = None) -> int:
         return 0
 
     elif parsed_args.command == "validate":
-        report = validate_videos_json(config.videos_processed_path)
+        report = validate_videos_json(
+            file_path=config.videos_processed_path,
+            playlists_path=config.playlists_processed_path,
+        )
         report.print_summary()
         return 0 if report.is_valid else 1
 
     elif parsed_args.command == "stats":
-        stats = compute_library_stats(config.videos_processed_path)
+        stats = compute_library_stats(
+            videos_json_path=config.videos_processed_path,
+            playlists_json_path=config.playlists_processed_path,
+        )
         if stats:
             stats.print_report()
             return 0

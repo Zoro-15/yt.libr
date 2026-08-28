@@ -1,16 +1,19 @@
 """
 Normalization module.
-Converts raw yt-dlp extracted entries into canonical VideoRecord structures.
+Converts raw yt-dlp extracted entries and playlists into canonical structures:
+- VideoRecord (YouTube metadata only, with source tagging and playlist references)
+- PlaylistRecord (YouTube playlist metadata and ordered video_id references)
 Strictly extracts YouTube metadata only and rejects personal database fields.
 """
 
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, field
 import re
 from typing import Any, Dict, List, Optional, Union
 from urllib.parse import parse_qs, urlparse
 
 
 YOUTUBE_ID_REGEX = re.compile(r"^[a-zA-Z0-9_-]{11}$")
+PLAYLIST_ID_REGEX = re.compile(r"^(PL|FL|UU|RD|LL|WL|OLAK5uy_)[a-zA-Z0-9_-]+$|^[a-zA-Z0-9_-]{12,}$")
 
 
 @dataclass
@@ -31,6 +34,20 @@ class ThumbnailInfo:
 
 
 @dataclass
+class PlaylistReference:
+    id: str
+    title: str
+    position: Optional[int] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "title": self.title,
+            "position": self.position,
+        }
+
+
+@dataclass
 class VideoRecord:
     video_id: str
     url: str
@@ -42,6 +59,7 @@ class VideoRecord:
     description: Optional[str]
     sources: List[str]
     source_positions: Dict[str, Optional[int]]
+    playlists: List[PlaylistReference] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -55,6 +73,29 @@ class VideoRecord:
             "description": self.description,
             "sources": sorted(list(set(self.sources))),
             "source_positions": self.source_positions,
+            "playlists": [p.to_dict() if isinstance(p, PlaylistReference) else p for p in self.playlists],
+        }
+
+
+@dataclass
+class PlaylistRecord:
+    playlist_id: str
+    title: str
+    url: str
+    description: Optional[str]
+    channel: ChannelInfo
+    video_count: int
+    video_ids: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "playlist_id": self.playlist_id,
+            "title": self.title,
+            "url": self.url,
+            "description": self.description,
+            "channel": self.channel.to_dict(),
+            "video_count": self.video_count,
+            "video_ids": self.video_ids,
         }
 
 
@@ -68,7 +109,6 @@ def extract_canonical_video_id(raw_id: Optional[str], raw_url: Optional[str] = N
         if YOUTUBE_ID_REGEX.match(cleaned_id):
             return cleaned_id
         if len(cleaned_id) >= 11:
-            # Check if there's an 11-char pattern inside
             match = YOUTUBE_ID_REGEX.search(cleaned_id)
             if match:
                 return match.group(0)
@@ -89,6 +129,31 @@ def extract_canonical_video_id(raw_id: Optional[str], raw_url: Optional[str] = N
             vid = parsed.path.split("/shorts/")[1].split("/")[0].split("?")[0]
             if YOUTUBE_ID_REGEX.match(vid):
                 return vid
+
+    return None
+
+
+def extract_canonical_playlist_id(raw_id: Optional[str], raw_url: Optional[str] = None) -> Optional[str]:
+    """
+    Extracts canonical playlist ID (e.g. PL..., WL, LL) from string ID or playlist URL.
+    """
+    if raw_id and isinstance(raw_id, str):
+        cid = raw_id.strip()
+        if cid in ("WL", "LL") or PLAYLIST_ID_REGEX.match(cid):
+            return cid
+
+    if raw_url and isinstance(raw_url, str):
+        parsed = urlparse(raw_url.strip())
+        if parsed.query:
+            qs = parse_qs(parsed.query)
+            if "list" in qs and qs["list"]:
+                pid = qs["list"][0]
+                if pid in ("WL", "LL") or PLAYLIST_ID_REGEX.match(pid):
+                    return pid
+        if "/playlist/" in parsed.path:
+            parts = parsed.path.split("/playlist/")[1].split("/")
+            if parts and parts[0]:
+                return parts[0]
 
     return None
 
@@ -115,12 +180,10 @@ def pick_best_thumbnail_url(entry: Dict[str, Any]) -> Optional[str]:
     """
     Picks the best thumbnail URL from yt-dlp entry data.
     """
-    # Direct thumbnail field
     thumb = entry.get("thumbnail")
     if thumb and isinstance(thumb, str) and thumb.startswith("http"):
         return thumb.strip()
 
-    # List of thumbnails
     thumbs = entry.get("thumbnails")
     if isinstance(thumbs, list) and thumbs:
         valid_thumbs = [
@@ -128,11 +191,9 @@ def pick_best_thumbnail_url(entry: Dict[str, Any]) -> Optional[str]:
             if isinstance(t, dict) and t.get("url") and isinstance(t["url"], str) and t["url"].startswith("http")
         ]
         if valid_thumbs:
-            # Sort by width / preference if available
             valid_thumbs.sort(key=lambda t: (t.get("preference", 0) or 0, t.get("width", 0) or 0))
             return valid_thumbs[-1]["url"].strip()
 
-    # If we have video_id, construct maxres / hqdefault fallback
     vid = entry.get("id")
     if vid and isinstance(vid, str) and YOUTUBE_ID_REGEX.match(vid.strip()):
         return f"https://i.ytimg.com/vi/{vid.strip()}/hqdefault.jpg"
@@ -144,6 +205,8 @@ def normalize_entry(
     entry: Dict[str, Any],
     source_name: str,
     position: Optional[int] = None,
+    playlist_id: Optional[str] = None,
+    playlist_title: Optional[str] = None,
 ) -> Optional[VideoRecord]:
     """
     Normalizes a single raw yt-dlp entry into a clean VideoRecord.
@@ -221,10 +284,24 @@ def normalize_entry(
 
     # Source and position tracking
     sources = [source_name] if source_name else []
-    source_positions = {
+    source_positions: Dict[str, Optional[int]] = {
         "watch_later": position if source_name == "watch_later" else None,
         "liked": position if source_name == "liked" else None,
     }
+
+    playlists: List[PlaylistReference] = []
+    if playlist_id:
+        source_key = f"playlist:{playlist_id}"
+        if source_key not in sources:
+            sources.append(source_key)
+        source_positions[playlist_id] = position
+        playlists.append(
+            PlaylistReference(
+                id=playlist_id,
+                title=playlist_title or f"Playlist {playlist_id}",
+                position=position,
+            )
+        )
 
     return VideoRecord(
         video_id=video_id,
@@ -237,12 +314,15 @@ def normalize_entry(
         description=description,
         sources=sources,
         source_positions=source_positions,
+        playlists=playlists,
     )
 
 
 def normalize_raw_entries(
     raw_entries: List[Dict[str, Any]],
     source_name: str,
+    playlist_id: Optional[str] = None,
+    playlist_title: Optional[str] = None,
 ) -> List[VideoRecord]:
     """
     Normalizes a list of raw entries from a specific source.
@@ -254,9 +334,61 @@ def normalize_raw_entries(
     for entry in raw_entries:
         if not entry:
             continue
-        record = normalize_entry(entry, source_name=source_name, position=position)
+        record = normalize_entry(
+            entry,
+            source_name=source_name,
+            position=position,
+            playlist_id=playlist_id,
+            playlist_title=playlist_title,
+        )
         if record:
             normalized_list.append(record)
             position += 1
 
     return normalized_list
+
+
+def normalize_playlist_info(
+    raw_info: Dict[str, Any],
+    video_ids: Optional[List[str]] = None,
+) -> Optional[PlaylistRecord]:
+    """
+    Normalizes raw playlist metadata into a PlaylistRecord.
+    """
+    if not isinstance(raw_info, dict):
+        return None
+
+    raw_id = raw_info.get("id") or raw_info.get("playlist_id")
+    raw_url = raw_info.get("url") or raw_info.get("webpage_url")
+    pid = extract_canonical_playlist_id(raw_id, raw_url)
+    if not pid:
+        return None
+
+    title = (raw_info.get("title") or f"Playlist {pid}").strip()
+    url = f"https://www.youtube.com/playlist?list={pid}"
+    desc = raw_info.get("description") or None
+
+    ch_name = (
+        raw_info.get("channel")
+        or raw_info.get("uploader")
+        or raw_info.get("channel_name")
+        or raw_info.get("uploader_name")
+    )
+    ch_id = (
+        raw_info.get("channel_id")
+        or raw_info.get("uploader_id")
+    )
+    channel = ChannelInfo(name=ch_name, id=ch_id)
+
+    vids = video_ids or []
+    count = raw_info.get("playlist_count") or len(vids)
+
+    return PlaylistRecord(
+        playlist_id=pid,
+        title=title,
+        url=url,
+        description=desc,
+        channel=channel,
+        video_count=count,
+        video_ids=vids,
+    )

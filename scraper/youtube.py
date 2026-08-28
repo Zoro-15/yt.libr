@@ -1,7 +1,7 @@
 """
 YouTube extraction module.
 Wraps yt-dlp to extract playlist metadata (Watch Later, Liked Videos, User Playlists, and custom Playlists)
-without downloading media, with support for batching, limits, progress tracking, and checkpoints.
+without downloading media, with support for batching, limits, progress tracking, resilient error handling, and checkpoints.
 """
 
 from dataclasses import dataclass
@@ -90,6 +90,7 @@ def discover_user_playlists(
     """
     Discovers all playlists created or saved in the authenticated user's YouTube account.
     Queries https://www.youtube.com/feed/playlists.
+    Filters out dynamic radio / mix playlists (RD...) that cannot be fetched as static playlists.
     """
     try:
         import yt_dlp
@@ -113,6 +114,10 @@ def discover_user_playlists(
                     continue
                 pid = extract_canonical_playlist_id(item.get("id"), item.get("url"))
                 if pid:
+                    # Ignore YouTube Mix / Radio streams (RD... or RDEM...) which are not static playlists
+                    if pid.startswith("RD"):
+                        continue
+
                     discovered_playlists.append({
                         "id": pid,
                         "title": item.get("title") or f"Playlist {pid}",
@@ -122,8 +127,7 @@ def discover_user_playlists(
                         "channel_id": item.get("channel_id") or item.get("uploader_id"),
                         "playlist_count": item.get("playlist_count"),
                     })
-    except Exception as e:
-        # Fallback check if direct feed failed
+    except Exception:
         pass
 
     return discovered_playlists
@@ -140,6 +144,7 @@ def extract_youtube_playlist(
     Extracts metadata entries from a YouTube playlist using yt-dlp.
     Supports 'watch_later', 'liked', or arbitrary playlist URL/ID (e.g. 'PL...').
     Does NOT download media files.
+    Gracefully handles unviewable, private, or mix playlist types.
     """
     try:
         import yt_dlp
@@ -165,6 +170,28 @@ def extract_youtube_playlist(
             playlist_url = f"https://www.youtube.com/playlist?list={playlist_id}"
         source_name = f"playlist:{playlist_id}"
 
+    # Handle YouTube Mix / Radio IDs (RD...)
+    if playlist_id.startswith("RD"):
+        return ExtractionResult(
+            source_name=source_name,
+            playlist_id=playlist_id,
+            playlist_title=f"YouTube Mix ({playlist_id})",
+            playlist_description="Dynamic auto-generated YouTube Mix (unviewable as static playlist)",
+            channel_name=None,
+            channel_id=None,
+            entries=[],
+            errors=[{
+                "video_id": playlist_id,
+                "source": source_name,
+                "error": "Dynamic YouTube Mix / Radio (RD...) is auto-generated and unviewable as a static playlist.",
+                "timestamp": iso_now(),
+            }],
+            total_processed=0,
+            success_count=0,
+            unavailable_count=0,
+            failed_count=1,
+        )
+
     ydl_opts = get_ydl_options(config, limit=limit)
 
     valid_entries: List[Dict[str, Any]] = []
@@ -177,77 +204,110 @@ def extract_youtube_playlist(
 
     checkpoint_file = config.checkpoints_dir / f"{playlist_id}_checkpoint.json"
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(playlist_url, download=False)
-        if not info:
-            raise RuntimeError(f"Could not retrieve playlist info for '{source_name_or_url}'. Check cookies and internet connection.")
-
-        raw_entries_generator = info.get("entries")
-        playlist_title = info.get("title") or (source_name.replace("_", " ").title())
-        playlist_description = info.get("description") or None
-        channel_name = info.get("channel") or info.get("uploader") or None
-        channel_id = info.get("channel_id") or info.get("uploader_id") or None
-        reported_total = info.get("playlist_count") or (limit if limit else None)
-
-        if raw_entries_generator is not None:
-            for item in raw_entries_generator:
-                total_processed += 1
-
-                if limit and total_processed > limit:
-                    break
-
-                unavail, reason = is_entry_unavailable(item)
-                if unavail:
-                    unavailable_count += 1
-                    vid = (item.get("id") if item else None) or "unknown"
-                    errors.append({
-                        "video_id": vid,
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(playlist_url, download=False)
+            if not info:
+                return ExtractionResult(
+                    source_name=source_name,
+                    playlist_id=playlist_id,
+                    playlist_title=source_name.replace("_", " ").title(),
+                    playlist_description=None,
+                    channel_name=None,
+                    channel_id=None,
+                    entries=[],
+                    errors=[{
+                        "video_id": playlist_id,
                         "source": source_name,
-                        "error": reason,
+                        "error": "YouTube returned empty response for playlist.",
                         "timestamp": iso_now(),
-                    })
-                elif item:
-                    vid = extract_canonical_video_id(item.get("id"), item.get("url"))
-                    if vid:
-                        success_count += 1
-                        valid_entries.append(item)
+                    }],
+                    total_processed=0,
+                    success_count=0,
+                    unavailable_count=0,
+                    failed_count=1,
+                )
+
+            raw_entries_generator = info.get("entries")
+            playlist_title = info.get("title") or (source_name.replace("_", " ").title())
+            playlist_description = info.get("description") or None
+            channel_name = info.get("channel") or info.get("uploader") or None
+            channel_id = info.get("channel_id") or info.get("uploader_id") or None
+            reported_total = info.get("playlist_count") or (limit if limit else None)
+
+            if raw_entries_generator is not None:
+                for item in raw_entries_generator:
+                    total_processed += 1
+
+                    if limit and total_processed > limit:
+                        break
+
+                    unavail, reason = is_entry_unavailable(item)
+                    if unavail:
+                        unavailable_count += 1
+                        vid = (item.get("id") if item else None) or "unknown"
+                        errors.append({
+                            "video_id": vid,
+                            "source": source_name,
+                            "error": reason,
+                            "timestamp": iso_now(),
+                        })
+                    elif item:
+                        vid = extract_canonical_video_id(item.get("id"), item.get("url"))
+                        if vid:
+                            success_count += 1
+                            valid_entries.append(item)
+                        else:
+                            failed_count += 1
+                            errors.append({
+                                "video_id": item.get("id") or "unknown",
+                                "source": source_name,
+                                "error": "Could not parse canonical video ID",
+                                "timestamp": iso_now(),
+                            })
                     else:
                         failed_count += 1
                         errors.append({
-                            "video_id": item.get("id") or "unknown",
+                            "video_id": "unknown",
                             "source": source_name,
-                            "error": "Could not parse canonical video ID",
+                            "error": "Empty entry",
                             "timestamp": iso_now(),
                         })
-                else:
-                    failed_count += 1
-                    errors.append({
-                        "video_id": "unknown",
-                        "source": source_name,
-                        "error": "Empty entry",
-                        "timestamp": iso_now(),
-                    })
 
-                # Progress callback
-                if progress_callback:
-                    progress_callback(total_processed, reported_total, success_count, unavailable_count, failed_count)
+                    # Progress callback
+                    if progress_callback:
+                        progress_callback(total_processed, reported_total, success_count, unavailable_count, failed_count)
 
-                # Periodic Checkpoint
-                if config.save_checkpoints and (total_processed % config.checkpoint_interval == 0):
-                    try:
-                        temp_cp = checkpoint_file.with_suffix(".tmp")
-                        with open(temp_cp, "w", encoding="utf-8") as cp_f:
-                            json.dump({
-                                "source": source_name,
-                                "playlist_id": playlist_id,
-                                "total_processed": total_processed,
-                                "entries_count": len(valid_entries),
-                                "entries": valid_entries,
-                                "timestamp": iso_now(),
-                            }, cp_f)
-                        temp_cp.replace(checkpoint_file)
-                    except Exception:
-                        pass
+                    # Periodic Checkpoint
+                    if config.save_checkpoints and (total_processed % config.checkpoint_interval == 0):
+                        try:
+                            temp_cp = checkpoint_file.with_suffix(".tmp")
+                            with open(temp_cp, "w", encoding="utf-8") as cp_f:
+                                json.dump({
+                                    "source": source_name,
+                                    "playlist_id": playlist_id,
+                                    "total_processed": total_processed,
+                                    "entries_count": len(valid_entries),
+                                    "entries": valid_entries,
+                                    "timestamp": iso_now(),
+                                }, cp_f)
+                            temp_cp.replace(checkpoint_file)
+                        except Exception:
+                            pass
+
+    except Exception as e:
+        error_msg = str(e)
+        errors.append({
+            "video_id": playlist_id,
+            "source": source_name,
+            "error": error_msg,
+            "timestamp": iso_now(),
+        })
+        failed_count += 1
+        playlist_title = source_name.replace("_", " ").title()
+        playlist_description = None
+        channel_name = None
+        channel_id = None
 
     # Clean up checkpoint on complete extraction
     if checkpoint_file.exists() and not dry_run:

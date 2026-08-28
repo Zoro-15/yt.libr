@@ -33,6 +33,7 @@ from scraper.utils import (
     WARN_MARK,
     bold,
     cyan,
+    dim,
     green,
     print_progress,
     red,
@@ -81,7 +82,7 @@ def scrape_source(
 
     print()
 
-    if not dry_run:
+    if not dry_run and result.entries:
         raw_path = config.watch_later_raw_path if source_name == "watch_later" else config.liked_raw_path
         save_raw_extraction(
             output_path=raw_path,
@@ -95,9 +96,9 @@ def scrape_source(
         )
         print(f"Raw data saved to: {green(str(raw_path))}")
 
-        if result.errors:
-            save_error_log(config.errors_log_path, result.errors)
-            print(f"Logged {yellow(str(len(result.errors)))} unavailable/error items to {config.errors_log_path}")
+    if result.errors:
+        save_error_log(config.errors_log_path, result.errors)
+        print(f"Logged {yellow(str(len(result.errors)))} unavailable/error items to {config.errors_log_path}")
 
     print(f"Summary for {display_title}: "
           f"{green(f'{CHECK_MARK} {result.success_count:,} valid')} | "
@@ -116,6 +117,7 @@ def scrape_single_playlist(
     """
     Extracts all metadata and embedded videos from a specific playlist.
     Saves to data/raw/playlists/<playlist_id>.json.
+    Gracefully skips unviewable mix playlists without breaking pipeline.
     """
     pid = extract_canonical_playlist_id(playlist_id_or_url, playlist_id_or_url) or playlist_id_or_url
     print(bold(f"\nExtracting Playlist: {cyan(pid)}"))
@@ -139,9 +141,16 @@ def scrape_single_playlist(
         progress_callback=on_progress,
     )
 
-    print()
+    if result.total_processed > 0:
+        print()
 
-    if not dry_run:
+    if result.success_count == 0 and result.failed_count > 0:
+        print(yellow(f"{WARN_MARK} Playlist '{pid}' is unviewable or dynamic mix. Skipped gracefully."))
+        if result.errors:
+            save_error_log(config.errors_log_path, result.errors)
+        return result
+
+    if not dry_run and result.entries:
         raw_path = config.playlists_raw_dir / f"{result.playlist_id}.json"
         save_raw_extraction(
             output_path=raw_path,
@@ -155,8 +164,8 @@ def scrape_single_playlist(
         )
         print(f"Playlist saved to: {green(str(raw_path))}")
 
-        if result.errors:
-            save_error_log(config.errors_log_path, result.errors)
+    if result.errors:
+        save_error_log(config.errors_log_path, result.errors)
 
     print(f"Summary for '{result.playlist_title}': "
           f"{green(f'{CHECK_MARK} {result.success_count:,} valid videos')} | "
@@ -173,6 +182,7 @@ def scrape_user_playlists(
 ) -> List[ExtractionResult]:
     """
     Discovers all user playlists from the YouTube account and extracts each one.
+    Resilient: an error in one playlist will never interrupt the others.
     """
     print(bold("\n--- Discovering User Playlists ---"))
     discovered = discover_user_playlists(config, limit=playlist_limit)
@@ -183,20 +193,28 @@ def scrape_user_playlists(
 
     print(f"Found {green(str(len(discovered)))} user playlist(s):")
     for idx, pl in enumerate(discovered, 1):
-        print(f"  {idx}. {cyan(pl['title'])} ({pl['id']})")
+        print(f"  {idx:2d}. {cyan(pl['title'])} ({dim(pl['id'])})")
 
     if not dry_run:
         save_raw_playlists_index(config.playlists_index_raw_path, discovered)
 
     results: List[ExtractionResult] = []
     for pl in discovered:
-        res = scrape_single_playlist(
-            playlist_id_or_url=pl["id"],
-            config=config,
-            limit=video_limit,
-            dry_run=dry_run,
-        )
-        results.append(res)
+        try:
+            res = scrape_single_playlist(
+                playlist_id_or_url=pl["id"],
+                config=config,
+                limit=video_limit,
+                dry_run=dry_run,
+            )
+            results.append(res)
+        except Exception as err:
+            print(yellow(f"{WARN_MARK} Unexpected error extracting playlist '{pl.get('id')}': {err}"))
+            save_error_log(config.errors_log_path, [{
+                "video_id": pl.get("id", "unknown"),
+                "source": f"playlist:{pl.get('id', 'unknown')}",
+                "error": str(err),
+            }])
 
     return results
 
@@ -234,6 +252,9 @@ def run_merge_pipeline(config: ScraperConfig) -> None:
         pid = raw_pl.get("playlist_id") or raw_pl.get("id") or "custom_playlist"
         title = raw_pl.get("playlist_title") or raw_pl.get("title") or pid
         entries = raw_pl.get("entries") or []
+
+        if not entries:
+            continue
 
         normalized_entries = normalize_raw_entries(
             entries,

@@ -1,6 +1,6 @@
 # YouTube Library Scraper (`yt-library`)
 
-> A standalone, security-first CLI tool for **Android Termux** and **PC / Desktop Terminal** to extract, normalize, deduplicate, and merge YouTube metadata from **Watch Later**, **Liked Videos**, and **All User Playlists** (3,000+ videos) into clean, versioned JSONs (`videos.json` & `playlists.json`) **without downloading any video or audio files**.
+> A standalone, high-performance CLI tool for **Android Termux** and **PC / Desktop Terminal** (Windows PowerShell, macOS, Linux) to extract, normalize, deduplicate, and merge YouTube metadata from **Watch Later**, **Liked Videos**, and **All User Playlists** (3,000+ videos) into clean, versioned JSON datasets (`videos.json` & `playlists.json`) **without downloading any video or audio files**.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python: 3.8+](https://img.shields.io/badge/python-3.8+-green.svg)](https://www.python.org/)
@@ -9,7 +9,7 @@
 
 ---
 
-## 1. Project Overview & Architecture
+## 1. Architecture & Design Principles
 
 This tool is intentionally designed as an **independent extraction utility**, strictly decoupled from any future personal video library website or database.
 
@@ -34,7 +34,7 @@ This tool is intentionally designed as an **independent extraction utility**, st
              2. Canonical Deduplication (by YouTube video_id)
                          │
                          ▼
-             3. Multi-Source Merging & Playlist Indexing
+             3. Multi-Source Merging & Playlist Position Indexing
                          │
                          ▼
              4. Versioned JSON Outputs:
@@ -62,17 +62,14 @@ This tool deals with authenticated YouTube data (private playlists: `:ytwatchlat
 
 - **No Passwords**: The script never asks for or stores usernames or passwords.
 - **Session Cookies**: Uses standard Netscape `cookies.txt` format or direct PC browser session extraction.
-- **Privacy Protection**: `.gitignore` strictly ignores `cookies*.txt`, `.env`, raw private data, and logs.
+- **Privacy Protection**: `.gitignore` strictly ignores `cookies*.txt`, `.env`, raw private data, checkpoints, and logs.
 - **Safe Output**: Generated JSON files contain only public video metadata and source identifiers.
 
 ---
 
-## 3. 📱 Step-by-Step Guide for Android (Termux) Users
-
-Follow these exact steps on your Android device:
+## 3. 📱 Setup Guide for Android (Termux) Users
 
 ### Step 1: Install Termux & Setup Repository
-Open Termux on your phone and run:
 
 **If you already cloned the repository (`~/yt.libr` exists):**
 ```bash
@@ -82,7 +79,7 @@ chmod +x scripts/install.sh
 ./scripts/install.sh
 ```
 
-**For a fresh installation:**
+**For a fresh installation on a new phone / Termux:**
 ```bash
 # 1. Update Termux packages
 pkg update -y && pkg upgrade -y
@@ -102,7 +99,6 @@ chmod +x scripts/install.sh
 ./scripts/install.sh
 ```
 
-
 ### Step 2: Export YouTube Cookies on Android
 Termux cannot read browser cookies directly due to Android app sandboxing. You need a `cookies.txt` file:
 1. Install **Kiwi Browser** or **Firefox Nightly** on your phone (browsers that support Chrome/Firefox extensions).
@@ -115,59 +111,17 @@ Termux cannot read browser cookies directly due to Android app sandboxing. You n
    chmod 600 ~/yt.libr/cookies.txt
    ```
 
-### Step 3: Run Diagnostic Check
+### Step 3: Run Diagnostic & Auth Test
 ```bash
 yt-library doctor
-```
-*(Verify that Python, yt-dlp, storage, and cookies all show green checkmarks).*
-
-### Step 4: Test Authentication
-```bash
 yt-library auth test
 ```
 
-### Step 5: Discover Your Playlists
-```bash
-yt-library list playlists
-```
-
-### Step 6: Test Scrape with Small Batch (20 Videos)
-```bash
-yt-library scrape all --limit 20
-```
-
-### Step 7: Full Scrape (3,000+ Videos & All Playlists)
-```bash
-# Extracts Watch Later, Liked, and all user playlists, then normalizes & merges
-yt-library scrape all
-```
-
-*You can also scrape individual custom playlists:*
-```bash
-# Extract a specific playlist by ID or URL
-yt-library scrape playlist PL1234567890
-```
-
-### Step 8: Validate & View Statistics
-```bash
-# Validate schema and unique IDs
-yt-library validate
-
-# View total unique videos, playlists, and overlap counts
-yt-library stats
-```
-
-The output files will be ready at:
-- `data/processed/videos.json`
-- `data/processed/playlists.json`
-
 ---
 
-## 4. 💻 Step-by-Step Guide for PC Users (Windows / macOS / Linux)
+## 4. 💻 Setup Guide for PC Users (Windows / macOS / Linux)
 
-You can run this directly in PowerShell, macOS/Linux Terminal, or Antigravity Terminal:
-
-### Step 1: Clone & Setup
+### Step 1: Clone & Install Dependencies
 ```bash
 # Clone the repository
 git clone https://github.com/Zoro-15/yt.libr.git
@@ -178,93 +132,246 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-### Step 2: Run Diagnostics
+### Step 2: Run Diagnostics with Your Browser Session
 On PC, you can either place `cookies.txt` in the root folder **OR** extract directly from your installed browser (`chrome`, `firefox`, `edge`, `brave`, `opera`):
 
-```bash
-# On Windows PowerShell:
+```powershell
+# Windows PowerShell:
 py -m scraper doctor --cookies-from-browser chrome
-
-# On macOS / Linux:
-yt-library doctor --cookies-from-browser chrome
-```
-
-### Step 3: Test Authentication & List Playlists
-```bash
-# Windows:
 py -m scraper auth test --cookies-from-browser chrome
-py -m scraper list playlists --cookies-from-browser chrome
 
-# macOS / Linux:
+# macOS / Linux Terminal:
+yt-library doctor --cookies-from-browser chrome
 yt-library auth test --cookies-from-browser chrome
-yt-library list playlists --cookies-from-browser chrome
 ```
 
-### Step 4: Test Scrape (20 Videos)
+---
+
+## 5. 🎯 All Commands for All Scenarios
+
+### ⚡ Scenario 1: Instant Offline Merge (No Internet / No Re-download)
+*Use this when your raw videos are already downloaded on disk in `data/raw/` and you want to generate the final `videos.json` and `playlists.json` in 2 seconds.*
+
 ```bash
-# Windows:
-py -m scraper scrape all --limit 20 --cookies-from-browser chrome
+# Android Termux:
+yt-library merge
+
+# Windows PowerShell:
+py -m scraper merge
 
 # macOS / Linux:
-yt-library scrape all --limit 20 --cookies-from-browser chrome
+yt-library merge
 ```
 
-### Step 5: Full Extraction & Merge
+---
+
+### 🌐 Scenario 2: Full Smart Scrape (Watch Later + Liked + Playlists)
+*Extracts Watch Later, Liked Videos, and all user playlists. Uses smart disk-caching (automatically skips sources and playlists that are already downloaded).*
+
 ```bash
-# Windows:
+# Android Termux:
+yt-library scrape all
+
+# Windows PC (using Chrome session):
 py -m scraper scrape all --cookies-from-browser chrome
 
-# macOS / Linux:
-yt-library scrape all --cookies-from-browser chrome
-```
-
-*Extract a single specific playlist:*
-```powershell
-py -m scraper scrape playlist PL1234567890 --cookies-from-browser chrome
-```
-
-### Step 6: Validate and View Statistics
-```bash
-# Windows:
-py -m scraper validate
-py -m scraper stats
-
-# macOS / Linux:
-yt-library validate
-yt-library stats
+# Windows PC (using cookies.txt):
+py -m scraper scrape all
 ```
 
 ---
 
-## 5. CLI Command Reference
+### 🔄 Scenario 3: Force Re-Scrape Everything from Scratch (`--force`)
+*Bypasses local disk cache and forces re-downloading fresh metadata for all sources and playlists from YouTube.*
 
-| Command | Description | Example |
+```bash
+# Android Termux:
+yt-library scrape all --force
+
+# Windows PC:
+py -m scraper scrape all --force --cookies-from-browser chrome
+```
+
+---
+
+### 🧪 Scenario 4: Test Preview Scrape (Limit 20 Videos)
+*Quick test to verify that extraction and cookies work properly with a small batch.*
+
+```bash
+# Android Termux:
+yt-library scrape all --limit 20
+
+# Windows PC:
+py -m scraper scrape all --limit 20 --cookies-from-browser chrome
+```
+
+---
+
+### 🕒 Scenario 5: Scrape Watch Later Only
+*Extracts only the Watch Later playlist to `data/raw/watch_later.json`.*
+
+```bash
+# Android Termux:
+yt-library scrape watch-later
+
+# Windows PC:
+py -m scraper scrape watch-later --cookies-from-browser chrome
+
+# With limit:
+yt-library scrape watch-later --limit 50
+```
+
+---
+
+### 👍 Scenario 6: Scrape Liked Videos Only
+*Extracts only Liked Videos to `data/raw/liked.json`.*
+
+```bash
+# Android Termux:
+yt-library scrape liked
+
+# Windows PC:
+py -m scraper scrape liked --cookies-from-browser chrome
+
+# With limit:
+yt-library scrape liked --limit 50
+```
+
+---
+
+### 📑 Scenario 7: Scrape All User Playlists Only
+*Discovers and extracts all user-created and saved playlists and their embedded videos.*
+
+```bash
+# Android Termux:
+yt-library scrape playlists
+
+# Windows PC:
+py -m scraper scrape playlists --cookies-from-browser chrome
+
+# Limit to first 10 playlists and 25 videos per playlist:
+yt-library scrape playlists --playlist-limit 10 --limit 25
+```
+
+---
+
+### 🎯 Scenario 8: Scrape a Single Specific Playlist by ID or URL
+*Extracts one specific playlist to `data/raw/playlists/<playlist_id>.json`.*
+
+```bash
+# Using Playlist ID (e.g. PLguWwLNVYKWecsPXNs4Tfi2NDvVPSC3bZ):
+yt-library scrape playlist PLguWwLNVYKWecsPXNs4Tfi2NDvVPSC3bZ
+
+# Using Full YouTube Playlist URL:
+yt-library scrape playlist "https://www.youtube.com/playlist?list=PLguWwLNVYKWecsPXNs4Tfi2NDvVPSC3bZ"
+
+# Windows PC:
+py -m scraper scrape playlist PLguWwLNVYKWecsPXNs4Tfi2NDvVPSC3bZ --cookies-from-browser chrome
+```
+
+---
+
+### 🔍 Scenario 9: Discover & List All User Playlists
+*Lists all playlists in your YouTube feed with their IDs, video counts, and URLs without downloading entries.*
+
+```bash
+# Android Termux:
+yt-library list playlists
+
+# Windows PC:
+py -m scraper list playlists --cookies-from-browser chrome
+```
+
+---
+
+### 🛡️ Scenario 10: Dry Run (Simulate Extraction without Saving)
+*Tests extraction from YouTube and displays progress without saving any files to disk.*
+
+```bash
+# Android Termux:
+yt-library scrape all --dry-run
+
+# Windows PC:
+py -m scraper scrape all --dry-run --cookies-from-browser chrome
+```
+
+---
+
+### ✅ Scenario 11: Validate Dataset Schema & Integrity
+*Validates `data/processed/videos.json` and `data/processed/playlists.json` against Schema Version 1 rules, unique IDs, canonical URLs, and forbidden personal fields.*
+
+```bash
+# Android Termux:
+yt-library validate
+
+# Windows PC:
+py -m scraper validate
+```
+
+---
+
+### 📊 Scenario 12: View Library Statistics & Analytics
+*Displays complete breakdown of total unique videos, Watch Later vs. Liked vs. Playlists counts, overlap counts, and total playback duration.*
+
+```bash
+# Android Termux:
+yt-library stats
+
+# Windows PC:
+py -m scraper stats
+```
+
+---
+
+### 🔋 Scenario 13: Prevent Termux Sleep During Large Extractions (3,000+ Videos)
+*Keeps CPU awake so Android battery optimization does not kill the scraping process.*
+
+```bash
+# 1. Acquire wake lock in Termux
+termux-wake-lock
+
+# 2. Run full extraction
+yt-library scrape all
+
+# 3. Release wake lock when done
+termux-wake-unlock
+```
+
+---
+
+## 6. CLI Command Summary Table
+
+| Command | Purpose | Example |
 | :--- | :--- | :--- |
-| `doctor` | Checks environment, dependencies, storage, and cookies | `yt-library doctor` |
-| `auth test` | Tests authenticated access to private playlists | `yt-library auth test` |
-| `list playlists` | Discovers and prints all created/saved playlists from YouTube feed | `yt-library list playlists` |
-| `scrape watch-later` | Extracts metadata from Watch Later to `data/raw/watch_later.json` | `yt-library scrape watch-later --limit 50` |
-| `scrape liked` | Extracts metadata from Liked Videos to `data/raw/liked.json` | `yt-library scrape liked --limit 50` |
-| `scrape playlists` | Discovers and extracts all user playlists and their embedded videos | `yt-library scrape playlists` |
-| `scrape playlist <ID/URL>` | Extracts a specific playlist and its videos to `data/raw/playlists/<id>.json` | `yt-library scrape playlist PL1234567890` |
-| `scrape all` | Extracts Watch Later, Liked, and user Playlists into merged JSONs | `yt-library scrape all` |
-| `merge` | Reads all raw data files and generates `videos.json` & `playlists.json` | `yt-library merge` |
-| `validate` | Validates `videos.json` and `playlists.json` against Schema Version 1 rules | `yt-library validate` |
-| `stats` | Displays breakdown of unique videos, playlists, overlaps, and duration | `yt-library stats` |
+| `doctor` | Diagnostics for Python, yt-dlp, storage, and cookies | `yt-library doctor` |
+| `auth test` | Test access to private Watch Later & Liked playlists | `yt-library auth test` |
+| `list playlists` | Discover and list all user playlists from feed | `yt-library list playlists` |
+| `scrape all` | Scrape Watch Later, Liked, & Playlists with smart caching | `yt-library scrape all` |
+| `scrape all --force` | Force re-download all sources and playlists | `yt-library scrape all --force` |
+| `scrape watch-later` | Scrape Watch Later playlist | `yt-library scrape watch-later --limit 100` |
+| `scrape liked` | Scrape Liked Videos playlist | `yt-library scrape liked --limit 100` |
+| `scrape playlists` | Scrape all user playlists | `yt-library scrape playlists` |
+| `scrape playlist <ID>` | Scrape a specific playlist by ID or URL | `yt-library scrape playlist PL12345` |
+| `merge` | Merge all downloaded raw data into final JSONs (2s) | `yt-library merge` |
+| `validate` | Verify schema compliance and ID uniqueness | `yt-library validate` |
+| `stats` | Display summary analytics and duration totals | `yt-library stats` |
 
 ### CLI Options & Flags
-- `--cookies <path>`: Custom path to `cookies.txt` (default: `./cookies.txt`).
-- `--cookies-from-browser <browser>`: Extract session directly from PC browser (`chrome`, `firefox`, `edge`, `brave`).
-- `--data-dir <path>`: Custom data output directory (default: `./data`).
-- `--config <path>`: Custom JSON configuration file.
+- `--force`: Force re-extraction even if data is already cached on disk.
+- `--limit <N>`: Maximum number of videos to extract per source/playlist.
+- `--playlist-limit <N>`: Maximum number of playlists to discover.
 - `--no-playlists`: Skip user playlists during `scrape all`.
 - `--dry-run`: Test extraction without writing files to disk.
-- `--no-merge`: (For `scrape all`) Skip automatic merge after scraping.
-- `--verbose` / `-v`: Verbose debug logging.
+- `--no-merge`: Skip automatic merge step after scraping.
+- `--cookies <path>`: Custom path to `cookies.txt` (default: `./cookies.txt`).
+- `--cookies-from-browser <browser>`: Extract session directly from PC browser (`chrome`, `firefox`, `edge`, `brave`).
+- `--data-dir <path>`: Custom data directory (default: `./data`).
+- `--config <path>`: Custom configuration JSON file.
+- `--verbose` / `-v`: Verbose debugging output.
 
 ---
 
-## 6. Output Data Structure
+## 7. Output Data Structure Reference
 
 ### A. Processed Videos (`data/processed/videos.json`)
 
@@ -341,43 +448,46 @@ yt-library stats
 
 ---
 
-## 7. Running Automated Tests
+## 8. Running Automated Unit Tests
 
-Run the unit test suite:
+Run the full unit test suite:
 ```bash
-python -m unittest discover tests
-# On Windows:
+# On Android / Linux / macOS:
+python3 -m unittest discover tests
+
+# On Windows PC:
 py -m unittest discover tests
 ```
 
 ---
 
-## 8. Updating yt-dlp
+## 9. Troubleshooting & FAQ Guide
 
-Because YouTube frequently updates internal player endpoints, update `yt-dlp` if extraction encounters issues:
+| Problem | Cause | Solution |
+| :--- | :--- | :--- |
+| `Installing pip is forbidden` | Termux manages `pip` via `pkg` | Run `git pull origin main` and `./scripts/install.sh`. The installer handles Termux's environment automatically. |
+| `This playlist type is unviewable (RD...)` | Dynamic YouTube Mix / Radio feed | Handled automatically! Dynamic mixes (`RD...`) are logged and skipped without halting the scraper. |
+| `Cookie file not found` | `cookies.txt` is missing | Export `cookies.txt` into the project root folder or use `--cookies-from-browser chrome`. |
+| `Private playlist / Sign in required` | Cookies expired or invalid | Log into YouTube in Kiwi/Firefox and export a fresh `cookies.txt`. |
+| `Termux killed process` | Android OS battery optimization | Run `termux-wake-lock` before long scrapes, or disable battery optimization for Termux in Android Settings. |
+| `UnicodeEncodeError` | Windows console cp1252 default | Handled automatically by `yt-library`, or run `chcp 65001` in PowerShell. |
+
+---
+
+## 10. Updating yt-dlp
+
+YouTube regularly updates internal player endpoints. To keep extraction fast and reliable, update `yt-dlp` periodically:
 
 ```bash
+# On Android Termux:
+pip install -U yt-dlp --break-system-packages 2>/dev/null || pip install -U yt-dlp
+
 # On PC:
 pip install --upgrade yt-dlp
-
-# On Android Termux:
-pip install -U yt-dlp
 ```
 
 ---
 
-## 9. Troubleshooting Guide
-
-| Problem | Cause | Solution |
-| :--- | :--- | :--- |
-| `Cookie file not found` | `cookies.txt` is missing | Export `cookies.txt` into project directory or use `--cookies-from-browser chrome`. |
-| `Private playlist / Sign in` | Cookies expired or invalid | Log in to YouTube again and re-export `cookies.txt`. |
-| `Termux killed process` | Android battery optimization | Disable battery optimization for Termux in Android Settings, or run `termux-wake-lock`. Partial checkpoints are saved in `data/checkpoints/`. |
-| `UnicodeEncodeError` | Windows console cp1252 | Handled automatically by `yt-library`, or run `chcp 65001` in PowerShell. |
-| `yt-dlp not installed` | Missing dependency | Run `pip install -r requirements.txt`. |
-
----
-
-## 10. License
+## 11. License
 
 This project is licensed under the [MIT License](LICENSE).

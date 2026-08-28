@@ -1,0 +1,9 @@
+{
+  "output_directory": "./data",
+  "cookies_file": "./cookies.txt",
+  "log_level": "info",
+  "rate_limit_delay_seconds": 0.5,
+  "save_checkpoints": true,
+  "checkpoint_interval": 100,
+  "schema_version": 1
+}
